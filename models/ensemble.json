@@ -1,0 +1,18 @@
+{
+  "type": "fixed",
+  "weights": {
+    "patchtst": 0.6,
+    "nhits": 0.4
+  },
+  "regime_vol": {
+    "enabled": false,
+    "vol_window": 20,
+    "thresholds": [0.01, 0.03],
+    "weights": {
+      "low":   {"patchtst": 0.5, "nhits": 0.5},
+      "mid":   {"patchtst": 0.6, "nhits": 0.4},
+      "high":  {"patchtst": 0.7, "nhits": 0.3}
+    }
+  }
+}
+
