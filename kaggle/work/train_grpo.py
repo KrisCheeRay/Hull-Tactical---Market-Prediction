@@ -23,6 +23,7 @@ def compute_reward(
     pnl = position * returns
     # 简单风险惩罚：波动率越高，持有仓位的惩罚越大
     # 或者：(Position * Volatility)^2
+    
     risk_penalty = lambda_risk * (position * volatility)**2
     return pnl - risk_penalty
 

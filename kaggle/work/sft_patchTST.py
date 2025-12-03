@@ -29,6 +29,7 @@ def build_model(cfg: SFTConfig) -> PatchTST:
         n_heads=cfg.n_heads,
         n_layers=cfg.n_layers,
         dropout=cfg.dropout,
+        revin=cfg.revin,
         batch_size=cfg.batch_size,
         learning_rate=cfg.learning_rate,
         weight_decay=cfg.weight_decay,
