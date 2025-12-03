@@ -1,90 +1,165 @@
 import json
+import logging
+import sys
 from pathlib import Path
-from typing import Optional
+from typing import List, Dict
 
+# Add project root to sys.path
+project_root = Path(__file__).resolve().parents[2]
+sys.path.append(str(project_root))
+
+import numpy as np
+import pandas as pd
 import polars as pl
+import torch
 from neuralforecast import NeuralForecast
 from neuralforecast.models import PatchTST
 
 from src.configs import DataSchema, SFTConfig, ArtifactPaths
 from src.feature_store import FeatureStore
 
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-def to_long_format(df_wide: pl.DataFrame, schema: DataSchema) -> pl.DataFrame:
-    # Expect df_wide already includes columns: unique_id, ds, y, and feature columns
-    # If your raw csv是宽表，请在数据工程侧转换后再调用本函数
-    required = {schema.unique_id_col, schema.timestamp_col, schema.target_col}
-    missing = required - set(df_wide.columns)
-    if missing:
-        raise ValueError(f"Missing columns for long format: {missing}")
-    return df_wide
+def to_long_format(df: pl.DataFrame, schema: DataSchema) -> pl.DataFrame:
+    """
+    Convert wide format to long format expected by NeuralForecast.
+    Actually, NeuralForecast expects: [unique_id, ds, y, feature_1, feature_2...]
+    This function ensures columns are correct.
+    """
+    required_cols = [schema.unique_id_col, schema.timestamp_col, "y"]
+    # Check if all feature cols exist
+    missing_features = [c for c in schema.feature_cols if c not in df.columns]
+    if missing_features:
+        logger.warning(f"Missing feature columns: {missing_features}")
+    
+    # Ensure required columns exist
+    for col in required_cols:
+        if col not in df.columns:
+            raise ValueError(f"Missing required column: {col}")
+            
+    return df
 
-
-def build_model(cfg: SFTConfig) -> PatchTST:
+def build_model(cfg: SFTConfig, schema: DataSchema) -> PatchTST:
+    # PatchTST in NeuralForecast currently strictly follows Channel Independence 
+    # and does not support 'hist_exog_list' (explicit channel mixing).
+    # We use it in its native CI mode: weight sharing across variables, but independent inference.
     return PatchTST(
-        input_size=cfg.input_size,
         h=cfg.horizon,
+        input_size=cfg.input_size,
+        # hist_exog_list=schema.feature_cols, # REMOVED: Not supported by PatchTST implementation
         patch_len=cfg.patch_len,
-        d_model=cfg.d_model,
+        stride=cfg.patch_len,
+        hidden_size=cfg.d_model,
+
         n_heads=cfg.n_heads,
-        n_layers=cfg.n_layers,
+        encoder_layers=cfg.n_layers,
         dropout=cfg.dropout,
         revin=cfg.revin,
-        batch_size=cfg.batch_size,
-        learning_rate=cfg.learning_rate,
-        weight_decay=cfg.weight_decay,
         max_steps=cfg.max_steps,
-        patience=cfg.patience,
+        learning_rate=cfg.learning_rate,
+        batch_size=cfg.batch_size,
+        random_seed=42,
+        early_stop_patience_steps=cfg.patience,
     )
-
 
 def train_sft(
-    train_df: pl.DataFrame,
-    schema: DataSchema,
+    train_df: pl.DataFrame, 
+    schema: DataSchema, 
     cfg: SFTConfig,
-    artifacts: ArtifactPaths,
+    artifacts: ArtifactPaths
 ) -> None:
+    """
+    Train the SFT model (PatchTST) and save artifacts.
+    """
+    logger.info("Starting SFT Training (PatchTST)...")
+    
+    # 1. Feature Store (Fit & Transform)
+    logger.info("Fitting Feature Store...")
     fs = FeatureStore(schema=schema)
-    train_df = fs.fit_transform(train_df)
-
-    model = build_model(cfg)
-    nf = NeuralForecast(models=[model], freq=cfg.freq)
-    nf.fit(df=train_df.to_pandas())
-
-    Path(artifacts.models_dir).mkdir(parents=True, exist_ok=True)
-    # 保存权重
-    import torch
-    torch.save(nf.models[0].state_dict(), artifacts.patchtst_weights)
-    # 保存配置与特征
-    with open(artifacts.patchtst_config, "w", encoding="utf-8") as f:
-        json.dump(cfg.__dict__, f, ensure_ascii=False, indent=2)
+    train_scaled = fs.fit_transform(train_df)
     fs.save(artifacts)
-
+    
+    # 2. Initialize NeuralForecast Model
+    logger.info("Initializing PatchTST...")
+    model = build_model(cfg, schema)
+    
+    # 3. Train
+    nf = NeuralForecast(models=[model], freq=cfg.freq)
+    
+    # NeuralForecast expects pandas DataFrame
+    logger.info("Fitting model...")
+    nf.fit(df=train_scaled.to_pandas())
+    
+    # 4. Save Weights & Config (Using NeuralForecast native save)
+    logger.info(f"Saving model artifacts to {artifacts.patchtst_save_dir}...")
+    # nf.save() saves the entire NeuralForecast object including model weights and config
+    nf.save(path=artifacts.patchtst_save_dir, overwrite=True)
+        
+    logger.info("SFT Training Completed.")
 
 if __name__ == "__main__":
-    # 示例：从 Kaggle 官方数据读取并重命名为 long format
-    data_root = Path("/kaggle/input/hull-tactical-market-prediction/")
-    train = pl.read_csv(data_root / "train.csv")
-    # 将官方列名映射为 schema 要求；这里仅示例，真实映射请按数据工程成果替换
-    # 假设 'date_id' 可映射成时间索引，这里演示生成 'ds'（需在数据工程侧提供真实日期）
-    train = (
-        train.rename({"market_forward_excess_returns": "y"})
-        .with_columns(
-            pl.col("date_id").cast(pl.Int64).alias("ds"),
-            pl.lit("series_0").alias("unique_id"),
+    # Example usage with local csv
+    data_root = Path("kaggle/input/hull-tactical-market-prediction/")
+    if not data_root.exists():
+        data_root = Path("/kaggle/input/hull-tactical-market-prediction/")
+        
+    train_path = data_root / "train_feature_selected.csv"
+    
+    if train_path.exists():
+        print(f"Loading data from {train_path}...")
+        train = pl.read_csv(train_path)
+        
+        # Rename cols for NeuralForecast
+        # CRITICAL FIX: Shift forward_returns by 1 to align with inference logic.
+        # Train: y_t = forward_returns_{t-1}
+        # Inference: y_t = lagged_forward_returns (which is forward_returns_{t-1})
+        # This ensures we predict Day T's return using information available up to Day T.
+        if "forward_returns" in train.columns:
+            train = train.with_columns(
+                pl.col("forward_returns").shift(1).alias("y")
+            )
+        
+        if "date_id" in train.columns:
+            train = train.rename({"date_id": "ds"})
+            
+        # DROP NULLS for features AND the newly shifted y
+        # Based on user input, first ~1000 rows have empty features.
+        feature_cols = ["E2", "M13", "P8", "P5", "V9", "S2", "M12", "S5"]
+        original_len = len(train)
+        
+        # Data Cleaning Strategy:
+        # 1. Count nulls in feature columns
+        null_counts = train.select(
+            pl.sum_horizontal([pl.col(c).is_null() for c in feature_cols]).alias("null_count")
         )
-    )
+        train = train.with_columns(null_counts)
+        
+        # 2. Filter: Keep rows with <= 4 nulls (drops first ~1000 sparse rows)
+        # Also drop rows where 'y' is null (due to shift or original missing)
+        train = train.filter(
+            (pl.col("null_count") <= 4) & (pl.col("y").is_not_null())
+        )
+        
+        # 3. Fill remaining nulls with 0.0
+        train = train.with_columns([
+            pl.col(c).fill_null(0.0) for c in feature_cols
+        ])
+        train = train.drop("null_count") # cleanup
+        
+        print(f"Data Cleaning: Dropped {original_len - len(train)} rows. Remaining: {len(train)}")
 
-    schema = DataSchema(
-        unique_id_col="unique_id",
-        timestamp_col="ds",
-        target_col="y",
-        feature_cols=None,  # 自动推断除保留列外的所有列为特征
-    )
-    cfg = SFTConfig()
-    artifacts = ArtifactPaths()
-
-    train_long = to_long_format(train, schema)
-    train_sft(train_long, schema, cfg, artifacts)
-
-
+        # Add unique_id
+        train = train.with_columns(
+            pl.lit("series_0").alias("unique_id"),
+            pl.col("ds").cast(pl.Int64)
+        )
+        
+        schema = DataSchema()
+        cfg = SFTConfig()
+        artifacts = ArtifactPaths()
+        
+        train_long = to_long_format(train, schema)
+        train_sft(train_long, schema, cfg, artifacts)
+    else:
+        print("Train file not found, skipping local test.")

@@ -1,0 +1,10 @@
+{
+  "input_size": 60,
+  "h": 1,
+  "patch_len": 16,
+  "d_model": 128,
+  "n_heads": 4,
+  "n_layers": 3,
+  "dropout": 0.2,
+  "revin": true
+}

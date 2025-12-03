@@ -1,0 +1,26 @@
+# Logs
+lightning_logs/
+logs/
+*.log
+
+# Python
+__pycache__/
+*.pyc
+
+# Models (Large files)
+# models/*.ckpt
+# models/*.pt
+
+# Data
+kaggle/input/
+kaggle/work/
+
+# VSCode
+.vscode/
+.cursor/
+
+# Environment
+.env
+venv/
+env/
+
