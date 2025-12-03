@@ -17,10 +17,11 @@ class SFTConfig:
     horizon: int = 1
     # PatchTST model
     patch_len: int = 16
-    d_model: int = 256
-    n_heads: int = 8
+    d_model: int = 128  # Reduced from 256 to avoid overfitting on 9k samples
+    n_heads: int = 4    # Reduced from 8
     n_layers: int = 3
     dropout: float = 0.1
+    revin: bool = True  # Critical for handling 30-year distribution shifts
     # training
     batch_size: int = 64
     learning_rate: float = 1e-3
