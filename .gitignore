@@ -12,7 +12,7 @@ __pycache__/
 # models/*.pt
 
 # Data
-kaggle/input/
+# kaggle/input/
 kaggle/work/
 
 # VSCode
