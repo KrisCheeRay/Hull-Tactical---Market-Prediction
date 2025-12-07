@@ -1,7 +1,7 @@
 import json
 from pathlib import Path
 from typing import Optional
-
+import torch
 import polars as pl
 from neuralforecast import NeuralForecast
 from neuralforecast.models import PatchTST
@@ -20,8 +20,8 @@ def to_long_format(df_wide: pl.DataFrame, schema: DataSchema) -> pl.DataFrame:
     return df_wide
 
 
-def build_model(cfg: SFTConfig) -> PatchTST:
-    return PatchTST(
+def build_model(cfg: SFTConfig, pretrained_weights_path: Optional[str] = None) -> PatchTST:
+    model = PatchTST(
         input_size=cfg.input_size,
         h=cfg.horizon,
         patch_len=cfg.patch_len,
@@ -36,6 +36,14 @@ def build_model(cfg: SFTConfig) -> PatchTST:
         max_steps=cfg.max_steps,
         patience=cfg.patience,
     )
+    if pretrained_weights_path is not None:
+        if Path(pretrained_weights_path).exists():
+            state_dict = torch.load(pretrained_weights_path)
+            model.backbone.load_state_dict(state_dict)
+            print(f"Loaded pretrained weights from {pretrained_weights_path}")
+        else:
+            print(f"Pretrained weights not found at {pretrained_weights_path}, training from scratch.")
+    return model
 
 
 def train_sft(
@@ -43,11 +51,12 @@ def train_sft(
     schema: DataSchema,
     cfg: SFTConfig,
     artifacts: ArtifactPaths,
+    pretrained_weights_path: Optional[str] = None,
 ) -> None:
     fs = FeatureStore(schema=schema)
     train_df = fs.fit_transform(train_df)
 
-    model = build_model(cfg)
+    model = build_model(cfg, pretrained_weights_path=pretrained_weights_path)
     nf = NeuralForecast(models=[model], freq=cfg.freq)
     nf.fit(df=train_df.to_pandas())
 
@@ -84,7 +93,16 @@ if __name__ == "__main__":
     cfg = SFTConfig()
     artifacts = ArtifactPaths()
 
+    # 检查预训练权重是否存在
+    pretrained_path = Path("models/patchtst_pretrained.pt")
+    if pretrained_path.exists():
+        print(f"Using pretrained weights from {pretrained_path}")
+        pretrained_weights = str(pretrained_path)
+    else:
+        print("No pretrained weights found, training from scratch.")
+        pretrained_weights = None
+
     train_long = to_long_format(train, schema)
-    train_sft(train_long, schema, cfg, artifacts)
+    train_sft(train_long, schema, cfg, artifacts, pretrained_weights_path=pretrained_weights)
 
 

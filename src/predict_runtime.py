@@ -53,11 +53,15 @@ class SFTPredictor:
         if not self._ready:
             self.load()
         # 轻量处理与标准化
-        batch_df = self._fs.transform(batch_df)
+        batch_df = self._fs.transform(batch_df)   # 标准化这个对应的
+        preds_patch = self._patch_model(batch_df)
+        preds_nhits = self._nhits_model(batch_df)
+        y_hat = 0.5*preds_nhits + 0.5*preds_patch
+        return y_hat
         # 维护窗口（此处留作集成：在外部构建 [B,T,C]，或由库内部滑窗）
         # 简化：直接调用库期望的 DataFrame 输入预测接口（如需要）
         # 由于 online 预测通常需自定义 reshape，本类主要负责加载与标准化，具体拼接由调用方实现
-        raise NotImplementedError("Integrate with your gateway batching to produce [B,T,C] for model forward.")
+        #raise NotImplementedError("Integrate with your gateway batching to produce [B,T,C] for model forward.")
 
     def combine(self, pred_patch: float, pred_nhits: Optional[float], recent_vol: Optional[float] = None) -> float:
         # 固定权重
