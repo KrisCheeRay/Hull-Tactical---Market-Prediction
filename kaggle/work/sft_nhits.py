@@ -20,7 +20,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 def build_model(cfg: SFTConfig, schema: DataSchema) -> NHITS:
-    # NHITS 特有参数保持硬编码或扩展 Config，通用参数从 cfg 读取
+    # NHITS specific parameters are hardcoded or can be extended in Config, general params from cfg
     return NHITS(
         input_size=cfg.input_size,
         h=cfg.horizon,
