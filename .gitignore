@@ -6,26 +6,47 @@ logs/
 # Python
 __pycache__/
 *.pyc
+*.pyc
+*.pyd
+.Python
 
-# Models (Large files)
-# models/*.ckpt
-# models/*.pt
+# Models (Large files - keep structure but ignore weights)
+models/*.ckpt
+models/*.pt
+models/*.pkl
+models/*.parquet
+models/*.zip
+!models/ensemble.json
+!models/features.json
 
-# Data
+# Data (too large for GitHub)
 kaggle/input/
-kaggle/work/
-!kaggle/work/*.py
-!kaggle/work/*.md
-!kaggle/work/*.ipynb
-
-# Large dependencies
 neuralforecast_dataset/
 
-# VSCode
+# Temporary outputs
+submission*.parquet
+*.csv
+!kaggle/input/**/*.csv
+test_inference_*.csv
+backtest_*.png
+
+# VSCode/IDE
 .vscode/
 .cursor/
+.idea/
+*.swp
+*.swo
 
 # Environment
 .env
 venv/
 env/
+.conda/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb_checkpoints
