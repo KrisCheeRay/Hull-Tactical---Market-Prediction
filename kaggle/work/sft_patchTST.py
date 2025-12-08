@@ -40,11 +40,8 @@ def to_long_format(df: pl.DataFrame, schema: DataSchema) -> pl.DataFrame:
             
     return df
 
-def build_model(cfg: SFTConfig, schema: DataSchema) -> PatchTST:
-    # PatchTST in NeuralForecast currently strictly follows Channel Independence 
-    # and does not support 'hist_exog_list' (explicit channel mixing).
-    # We use it in its native CI mode: weight sharing across variables, but independent inference.
-    return PatchTST(
+def build_model(cfg: SFTConfig, pretrained_weights_path: Optional[str] = None) -> PatchTST:
+    model = PatchTST(
         h=cfg.horizon,
         input_size=cfg.input_size,
         # hist_exog_list=schema.feature_cols, # REMOVED: Not supported by PatchTST implementation
@@ -62,6 +59,15 @@ def build_model(cfg: SFTConfig, schema: DataSchema) -> PatchTST:
         random_seed=42,
         early_stop_patience_steps=cfg.patience,
     )
+    if pretrained_weights_path is not None:
+        if Path(pretrained_weights_path).exists():
+            state_dict = torch.load(pretrained_weights_path)
+            model.backbone.load_state_dict(state_dict)
+            print(f"Loaded pretrained weights from {pretrained_weights_path}")
+        else:
+            print(f"Pretrained weights not found at {pretrained_weights_path}, training from scratch.")
+    return model
+
 
 def train_sft(
     train_df: pl.DataFrame,
@@ -87,7 +93,7 @@ def train_sft(
 
     # 2. Initialize NeuralForecast Model
     logger.info("Initializing PatchTST...")
-    model = build_model(cfg, schema)
+    model = build_model(cfg, pretrained_weights_path=pretrained_weights_path)
     
     # 3. Load pretrained weights if provided
     if pretrained_weights_path and Path(pretrained_weights_path).exists():
@@ -180,7 +186,16 @@ if __name__ == "__main__":
         cfg = SFTConfig()
         artifacts = ArtifactPaths()
         
-        train_long = to_long_format(train, schema)
-        train_sft(train_long, schema, cfg, artifacts)
+        # 检查预训练权重是否存在
+        pretrained_path = Path("models/patchtst_pretrained.pt")
+        if pretrained_path.exists():
+            print(f"Using pretrained weights from {pretrained_path}")
+            pretrained_weights = str(pretrained_path)
+        else:
+            print("No pretrained weights found, training from scratch.")
+            pretrained_weights = None
+
+            train_long = to_long_format(train, schema)
+            train_sft(train_long, schema, cfg, artifacts, pretrained_weights_path=pretrained_weights)
     else:
         print("Train file not found, skipping local test.")
