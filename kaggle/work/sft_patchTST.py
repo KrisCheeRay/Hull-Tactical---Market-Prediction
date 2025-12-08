@@ -2,7 +2,7 @@ import json
 import logging
 import sys
 from pathlib import Path
-from typing import List, Dict
+from typing import List, Dict, Optional
 
 # Add project root to sys.path
 project_root = Path(__file__).resolve().parents[2]
@@ -70,14 +70,18 @@ def build_model(cfg: SFTConfig, pretrained_weights_path: Optional[str] = None) -
 
 
 def train_sft(
-    train_df: pl.DataFrame, 
-    schema: DataSchema, 
+    train_df: pl.DataFrame,
+    schema: DataSchema,
     cfg: SFTConfig,
     artifacts: ArtifactPaths,
-    pretrained_weights_path: Optional[str] = None,
+    pretrained_weights_path: Optional[str] = None
 ) -> None:
     """
     Train the SFT model (PatchTST) and save artifacts.
+    
+    Args:
+        pretrained_weights_path: Path to pretrained encoder weights from MAE pretraining.
+                                 If provided, loads encoder weights before fine-tuning.
     """
     logger.info("Starting SFT Training (PatchTST)...")
     
@@ -86,19 +90,34 @@ def train_sft(
     fs = FeatureStore(schema=schema)
     train_scaled = fs.fit_transform(train_df)
     fs.save(artifacts)
-    
+
     # 2. Initialize NeuralForecast Model
     logger.info("Initializing PatchTST...")
     model = build_model(cfg, pretrained_weights_path=pretrained_weights_path)
     
-    # 3. Train
+    # 3. Load pretrained weights if provided
+    if pretrained_weights_path and Path(pretrained_weights_path).exists():
+        logger.info(f"Loading pretrained encoder weights from {pretrained_weights_path}...")
+        checkpoint = torch.load(pretrained_weights_path, map_location='cpu')
+        
+        # Access backbone and encoder
+        backbone = model.model
+        encoder = backbone.backbone
+        
+        # Load encoder weights
+        encoder.load_state_dict(checkpoint['encoder_state_dict'], strict=False)
+        logger.info("Pretrained encoder weights loaded successfully")
+    elif pretrained_weights_path:
+        logger.warning(f"Pretrained weights path provided but file not found: {pretrained_weights_path}")
+    
+    # 4. Train
     nf = NeuralForecast(models=[model], freq=cfg.freq)
     
     # NeuralForecast expects pandas DataFrame
     logger.info("Fitting model...")
     nf.fit(df=train_scaled.to_pandas())
     
-    # 4. Save Weights & Config (Using NeuralForecast native save)
+    # 5. Save Weights & Config (Using NeuralForecast native save)
     logger.info(f"Saving model artifacts to {artifacts.patchtst_save_dir}...")
     # nf.save() saves the entire NeuralForecast object including model weights and config
     nf.save(path=artifacts.patchtst_save_dir, overwrite=True)
@@ -162,6 +181,7 @@ if __name__ == "__main__":
             pl.col("ds").cast(pl.Int64)
         )
         
+        # Configs
         schema = DataSchema()
         cfg = SFTConfig()
         artifacts = ArtifactPaths()

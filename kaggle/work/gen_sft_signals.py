@@ -18,7 +18,7 @@ from src.configs import DataSchema, SFTConfig, ArtifactPaths
 from src.feature_store import FeatureStore
 from kaggle.work.sft_patchTST import build_model as build_patchtst
 
-# 尝试导入 NHITS 构建函数，如果还没写 sft_nhits.py 则跳过
+# Try to import NHITS builder, skip if not available
 try:
     from kaggle.work.sft_nhits import build_model as build_nhits
 except ImportError:
@@ -28,7 +28,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 def get_ensemble_config(artifacts: ArtifactPaths) -> Dict:
-    """读取集成配置，如果不存在则返回默认配置"""
+    """Read ensemble config, return default if not exists"""
     if Path(artifacts.ensemble_config).exists():
         with open(artifacts.ensemble_config, "r") as f:
             return json.load(f)
@@ -36,9 +36,9 @@ def get_ensemble_config(artifacts: ArtifactPaths) -> Dict:
 
 def compute_recent_vol(df: pl.DataFrame, window: int = 20) -> np.ndarray:
     """
-    计算最近波动率，用于动态权重。
+    Compute recent volatility for dynamic weighting.
     """
-    # 简单起见，这里计算 y 的滚动标准差。
+    # Simple rolling std of y
     vol = df.select(pl.col("y").rolling_std(window_size=window).fill_null(0.0)).to_series().to_numpy()
     return vol
 
@@ -49,7 +49,7 @@ def combine_predictions(
     config: Dict
 ) -> np.ndarray:
     """
-    根据 ensemble.json 的逻辑合并预测值
+    Combine predictions based on ensemble.json logic
     """
     if preds_nhits is None:
         return preds_patch
@@ -98,16 +98,16 @@ def generate_oos_predictions(
     artifacts: ArtifactPaths
 ) -> None:
     """
-    核心函数：执行 K-Fold 交叉预测，生成“烂苹果”数据。
+    Core function: Execute K-Fold Cross Validation to generate "Rotten Apple" (OOS) data.
     """
     ensemble_cfg = get_ensemble_config(artifacts)
     logger.info(f"Loaded Ensemble Config: {ensemble_cfg}")
     
-    # 全局 Feature Store Fit (简化处理)
+    # Global Feature Store Fit (Simplified)
     fs = FeatureStore(schema=schema)
-    df_scaled = fs.fit_transform(df) # 全局 Scaling
+    df_scaled = fs.fit_transform(df) # Global Scaling
     
-    # 构建模型
+    # Build Models
     models = []
     # PatchTST: No hist_exog (CI mode)
     patch_model = build_patchtst(sft_cfg, schema)
@@ -120,7 +120,7 @@ def generate_oos_predictions(
         
     nf = NeuralForecast(models=models, freq=sft_cfg.freq)
     
-    # 计算需要回测的窗口数
+    # Calculate required backtest windows
     total_steps = df.height
     input_size = sft_cfg.input_size
     n_windows = total_steps - input_size - 1
@@ -131,8 +131,8 @@ def generate_oos_predictions(
 
     logger.info(f"Starting Cross Validation with n_windows={n_windows}...")
     
-    # step_size=1: 每天都预测第二天 (Rolling Window)
-    # refit=False: 为了速度，不重训。
+    # step_size=1: Predict next day every day (Rolling Window)
+    # refit=False: No retraining for speed
     cv_df = nf.cross_validation(
         df=df_scaled.to_pandas(),
         n_windows=n_windows,
@@ -148,7 +148,7 @@ def generate_oos_predictions(
     if "NHITS" in cv_df.columns:
         pred_nhits = cv_df["NHITS"].to_numpy()
         
-    # 计算 volatility (基于真实 y)
+    # Compute volatility (based on actual y)
     vol = compute_recent_vol(cv_df)
     
     final_y_hat = combine_predictions(pred_patch, pred_nhits, vol, ensemble_cfg)

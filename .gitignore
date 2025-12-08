@@ -14,6 +14,12 @@ __pycache__/
 # Data
 kaggle/input/
 kaggle/work/
+!kaggle/work/*.py
+!kaggle/work/*.md
+!kaggle/work/*.ipynb
+
+# Large dependencies
+neuralforecast_dataset/
 
 # VSCode
 .vscode/
@@ -23,4 +29,3 @@ kaggle/work/
 .env
 venv/
 env/
-

@@ -1,103 +1,100 @@
-## Kaggle Evaluation 框架快速笔记
+## Kaggle Evaluation Framework Quick Notes
 
-> 目标：用简单语言描述 `kaggle_evaluation` 包和 `demo.py` 的核心逻辑，帮助第一次参加 Kaggle 比赛的同学理解线上评测是怎么跑的。
-
----
-
-### 1. 整体流程（像接力赛）
-
-1. 我们写好的 `predict` 函数被包装进 `InferenceServer`。
-2. Kaggle 官方写的 `Gateway` 负责按时间顺序把测试集一段段送给 `predict`。
-3. `Gateway` 把每一段预测收集起来，合成最终的 `submission.parquet`。
-4. 传输数据靠 `relay`（使用 gRPC），就像一个双向对讲机。
+> Goal: Use simple language to describe the core logic of `kaggle_evaluation` package and `demo.py`, helping students participating in Kaggle competitions for the first time understand how online evaluation runs.
 
 ---
 
-### 2. `demo.py` 做了什么
+### 1. Overall Process (Like a Relay Race)
 
-- 顶部提醒：`predict` 必须自己实现，而且要在 5 分钟内回应每个 batch。
-- 目前的 `predict` 直接返回 `0.0`，只是占位符。
-- `DefaultInferenceServer(predict)` 会把我们的 `predict` 注册成服务端的监听函数。
-- 若环境变量 `KAGGLE_IS_COMPETITION_RERUN` 存在，说明在官方评测环境，会执行 `inference_server.serve()` 持续等待请求。
-- 本地调试时会调用 `run_local_gateway(...)`，使用公开数据模拟官方测试流程。
+1. The `predict` function we wrote is wrapped into `InferenceServer`.
+2. The official `Gateway` written by Kaggle is responsible for sending the test set batch by batch to `predict` in chronological order.
+3. `Gateway` collects each batch of predictions and synthesizes the final `submission.parquet`.
+4. Data transmission relies on `relay` (using gRPC), like a two-way walkie-talkie.
+
+---
+
+### 2. What `demo.py` Does
+
+- Top reminder: `predict` must be implemented by yourself, and must respond to each batch within 5 minutes.
+- The current `predict` returns `0.0` directly, just a placeholder.
+- `DefaultInferenceServer(predict)` will register our `predict` as a listener function for the server.
+- If the environment variable `KAGGLE_IS_COMPETITION_RERUN` exists, it means it is in the official evaluation environment, and `inference_server.serve()` will be executed to continuously wait for requests.
+- During local debugging, `run_local_gateway(...)` will be called to simulate the official test process using public data.
 
 ---
 
 ### 3. `kaggle_evaluation.default_inference_server`
 
-- **类：** `DefaultInferenceServer`
-- **功能：** 继承 `templates.InferenceServer`，只重写 `_get_gateway_for_test`，返回 `DefaultGateway`。
-- **理解：** 这是官方帮我们准备好的“默认网关 + 服务端”组合，方便我们本地自测。
+- **Class:** `DefaultInferenceServer`
+- **Function:** Inherits `templates.InferenceServer`, only overrides `_get_gateway_for_test`, returning `DefaultGateway`.
+- **Understanding:** This is the "default gateway + server" combination prepared by the official for us to facilitate local self-testing.
 
 ---
 
 ### 4. `kaggle_evaluation.default_gateway`
 
-- **类：** `DefaultGateway`
-- 继承 `templates.Gateway`，主要定制了三件事：
-  1. `unpack_data_paths`：找出比赛数据所在目录（默认是包内的 `test.csv`）。
-  2. `generate_data_batches`：把 `test.csv` 读成 `polars.DataFrame`，按 `batch_id`（第一列）拆成多个 batch，一次发给 `predict`。
-  3. `competition_specific_validation`：这里没做额外校验（`pass`），但子类里可以自定义检查逻辑。
-- 构造函数里还设置：预测列名 `prediction`、行 ID 列名 `batch_id`、响应时限 5 分钟。
+- **Class:** `DefaultGateway`
+- **Function:** Inherits `templates.Gateway`, mainly customized three things:
+  1. `unpack_data_paths`: Find the directory where the competition data is located (default is `test.csv` in the package).
+  2. `generate_data_batches`: Read `test.csv` into `polars.DataFrame`, split into multiple batches by `batch_id` (first column), and send to `predict` at once.
+  3. `competition_specific_validation`: No extra validation here (`pass`), but custom check logic can be added in subclasses.
+- Constructor also sets: prediction column name `prediction`, row ID column name `batch_id`, response time limit 5 minutes.
 
 ---
 
 ### 5. `core.templates`
 
-- **`Gateway` 抽象类**（主角是 `get_all_predictions` 用的三个抽象方法）：
-  - `unpack_data_paths()`：绑定数据路径。
-  - `generate_data_batches()`：将数据切片并附带 row IDs。
-  - `competition_specific_validation()`：写比赛特定的预测检查。
-- **`InferenceServer` 抽象类**：
-  - 构造时会把传入的函数（比如 `predict`）注册到 gRPC 服务端。
-  - `serve()`：在 Kaggle 线上模式会阻塞等待请求。
-  - `run_local_gateway()`：本地测试用，超时超过 15 分钟会发出警告。
+- **`Gateway` Abstract Class** (Protagonists are three abstract methods used by `get_all_predictions`):
+  - `unpack_data_paths()`: Bind data paths.
+  - `generate_data_batches()`: Slice data and attach row IDs.
+  - `competition_specific_validation()`: Write competition-specific prediction checks.
+- **`InferenceServer` Abstract Class**:
+  - Registers the passed function (e.g., `predict`) to the gRPC server during construction.
+  - `serve()`: Will block waiting for requests in Kaggle online mode.
+  - `run_local_gateway()`: For local testing, warns if timeout exceeds 15 minutes.
 
 ---
 
 ### 6. `core.base_gateway`
 
-`BaseGateway` 是 `DefaultGateway` 的父类，处理所有通用细节：
+`BaseGateway` is the parent class of `DefaultGateway`, handling all general details:
 
-- **初始化：** 建立 gRPC 客户端 (`relay.Client`)，保存数据路径、目标列名、行 ID 列名。
-- **超时设置：** `set_response_timeout_seconds` 控制 `predict` 的响应期限（除首 batch）。
-- **主流程 `run()`：**
-  1. `unpack_data_paths()` 设置数据目录。
-  2. `get_all_predictions()` 循环 `generate_data_batches()`。
-  3. 每个 batch 调 `predict`，做通用校验 `competition_agnostic_validation()`，再做自定义校验。
-  4. 收集所有预测，写出 `submission.parquet`。
-  5. 若在官方环境，还会写 `result.json` 记录是否成功。
-- **关键校验：** `competition_agnostic_validation` 确保预测行数和 row IDs 对齐，防止作弊或格式错误。
-- **文件共享：** `share_files` 用于把大文件挂载到选手容器（本地用符号链接，线上用 `mount`）。
-- **错误处理：** 通过 `GatewayRuntimeErrorType` 枚举提供清晰的用户提示。
+- **Initialization:** Establish gRPC client (`relay.Client`), save data path, target column name, row ID column name.
+- **Timeout Setting:** `set_response_timeout_seconds` controls the response deadline for `predict` (except for the first batch).
+- **Main Process `run()`:**
+  1. `unpack_data_paths()` sets data directory.
+  2. `get_all_predictions()` loops `generate_data_batches()`.
+  3. Call `predict` for each batch, do general validation `competition_agnostic_validation()`, then custom validation.
+  4. Collect all predictions, write out `submission.parquet`.
+  5. If in official environment, also write `result.json` to record success/failure.
+- **Key Validation:** `competition_agnostic_validation` ensures prediction row count aligns with row IDs, preventing cheating or format errors.
+- **File Sharing:** `share_files` is used to mount large files to the contestant container (symbolic link locally, `mount` online).
+- **Error Handling:** Provide clear user prompts via `GatewayRuntimeErrorType` enumeration.
 
 ---
 
 ### 7. `core.relay`
 
-- 承担“数据传输 + 序列化”任务。
-- **`Client`：**
-  - 负责和 `InferenceServer` 建立 gRPC 连接。
-  - 第一次连接允许等待 15 分钟，让服务器完成启动。
-  - 后续请求会受到 `endpoint_deadline_seconds` 限制。
-- **`define_server`：** 把函数列表（例如 `predict`）注册成 gRPC 服务端。
-- **序列化 `_serialize` / `_deserialize`：**
-  - 支持 `list`、`tuple`、`dict`、`numpy`、`pandas`、`polars` 等常见数据类型。
-  - 传输格式使用 Parquet / Arrow / NPY，保证速度与类型安全。
+- Undertakes "Data Transmission + Serialization" tasks.
+- **`Client`:**
+  - Responsible for establishing gRPC connection with `InferenceServer`.
+  - Allows waiting 15 minutes for the first connection to let the server finish starting.
+  - Subsequent requests will be limited by `endpoint_deadline_seconds`.
+- **`define_server`:** Register function list (e.g., `predict`) as gRPC server.
+- **Serialization `_serialize` / `_deserialize`:**
+  - Supports common data types like `list`, `tuple`, `dict`, `numpy`, `pandas`, `polars`.
+  - Transmission format uses Parquet / Arrow / NPY, ensuring speed and type safety.
 
 ---
 
-### 8. 开发者要点总结
+### 8. Developer Key Points Summary
 
-- `predict` 必须快速返回，并保证输出行数与 `Gateway` 提供的 row IDs 一致。
-- 若要跨 batch 记忆状态，可以在模块级别保存变量（`global`），但要注意内存。
-- 本地跑 `run_local_gateway` 前要确保数据路径正确（默认指向 `/kaggle/input/...`，本地需映射或修改）。
-- 一旦切换到 Kaggle 线上环境，`InferenceServer` 会一直监听，直到评测结束。
-- 所有日志和错误会通过 `result.json`、`submission.parquet` 反馈给我们。
+- `predict` must return quickly and ensure output row count matches row IDs provided by `Gateway`.
+- If state needs to be remembered across batches, variables can be saved at the module level (`global`), but pay attention to memory.
+- Before running `run_local_gateway` locally, ensure the data path is correct (default points to `/kaggle/input/...`, map or modify locally).
+- Once switched to Kaggle online environment, `InferenceServer` will listen continuously until evaluation ends.
+- All logs and errors will be fed back to us via `result.json`, `submission.parquet`.
 
 ---
 
-> 有了这些信息，我们就能从 0 开始实现一个最小可用版的 `predict`，并在本地模拟 Kaggle 的在线测试流程，后续再逐步增强特征和模型。
-
-
-
+> With this information, we can implement a minimum viable version of `predict` from scratch, simulate Kaggle's online test process locally, and then gradually enhance features and models.

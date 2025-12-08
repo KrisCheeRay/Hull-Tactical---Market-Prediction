@@ -5,7 +5,7 @@ from typing import Tuple
 
 class PolicyHead(nn.Module):
     """
-    Policy Head: 根据 SFT 预测值与市场状态，输出仓位 [0, 2]
+    Policy Head: Outputs position [0, 2] based on SFT predictions and market state.
     """
     def __init__(
         self,
@@ -14,10 +14,10 @@ class PolicyHead(nn.Module):
     ):
         """
         Args:
-            input_dim: 输入特征维度 (1 + n_stats)
-                       1: y_hat (SFT 预测值)
-                       n_stats: 历史窗口统计量 (如 vol, trend 等)
-            hidden_dim: 隐藏层维度
+            input_dim: Input feature dimension (1 + n_stats)
+                       1: y_hat (SFT prediction)
+                       n_stats: Historical window statistics (e.g., vol, trend)
+            hidden_dim: Hidden layer dimension
         """
         super().__init__()
         
@@ -28,33 +28,33 @@ class PolicyHead(nn.Module):
             nn.Linear(hidden_dim, hidden_dim // 2),
             nn.ReLU(),
             nn.Dropout(0.1),
-            nn.Linear(hidden_dim // 2, 2)  # 输出 alpha, beta 用于 Beta 分布
+            nn.Linear(hidden_dim // 2, 2)  # Output alpha, beta for Beta distribution
         )
         
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Returns:
-            alpha, beta: Beta 分布的参数，保证 > 0
+            alpha, beta: Parameters for Beta distribution, guaranteed > 0
         """
         out = self.net(x)
-        # Softplus 保证正数，+1e-6 防止除零
+        # Softplus ensures positivity, +1e-6 prevents division by zero
         alpha = F.softplus(out[:, 0]) + 1.0 + 1e-6
         beta = F.softplus(out[:, 1]) + 1.0 + 1e-6
         return alpha, beta
     
     def get_action(self, x: torch.Tensor, deterministic: bool = False) -> torch.Tensor:
         """
-        获取仓位 [0, 2]
+        Get position [0, 2]
         """
         alpha, beta = self.forward(x)
         
         if deterministic:
-            # 推理/评估：使用均值
+            # Inference/Evaluation: Use mean
             # Mean of Beta = alpha / (alpha + beta)
-            # 映射到 [0, 2] -> 2 * Mean
+            # Map to [0, 2] -> 2 * Mean
             action = 2.0 * (alpha / (alpha + beta))
         else:
-            # 训练：从分布采样
+            # Training: Sample from distribution
             dist = torch.distributions.Beta(alpha, beta)
             sample = dist.sample()
             action = 2.0 * sample
@@ -63,18 +63,17 @@ class PolicyHead(nn.Module):
 
     def get_log_prob(self, x: torch.Tensor, action: torch.Tensor) -> torch.Tensor:
         """
-        计算动作的 log probability (用于 Policy Gradient)
+        Calculate log probability of the action (for Policy Gradient)
         Args:
             x: state
-            action: 实际采取的动作 [0, 2]
+            action: actual action taken [0, 2]
         """
         alpha, beta = self.forward(x)
         dist = torch.distributions.Beta(alpha, beta)
         
-        # action 是 [0, 2]，需归一化回 [0, 1] 计算 Beta 分布概率
+        # action is [0, 2], need to normalize back to [0, 1] for Beta distribution probability
         action_norm = action / 2.0
-        action_norm = action_norm.clamp(1e-6, 1.0 - 1e-6) # 防止边界数值不稳定
+        action_norm = action_norm.clamp(1e-6, 1.0 - 1e-6) # Prevent boundary numerical instability
         
         log_prob = dist.log_prob(action_norm)
         return log_prob
-

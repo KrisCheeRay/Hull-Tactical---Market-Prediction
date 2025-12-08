@@ -1,317 +1,315 @@
-## RL & GRPO 学习笔记（按你刚才的思考路径整理）
+## RL & GRPO Learning Notes (Organized by your thought process)
 
-本笔记不是正式论文推导，而是**从直觉到公式再到代码**，完全按照你刚才的提问顺序，把概念串成一条线，方便你之后复习。
+This note is not a formal paper derivation, but a path **from intuition to formula to code**, following your questions, connecting concepts to help you review later.
 
 ---
 
-## 1. 从我们的项目出发：我们到底在干什么？
+## 1. Starting from our Project: What are we actually doing?
 
-先从你已经完全想通的那句开始：
+Let's start with the statement you fully understood:
 
-- **我们当前的交易 RL 设定其实是「单步轨迹」**：
-  - 每天视为一条轨迹：  
-    `state_t`（今天市场状态 + SFT 预测因子）  
-    → `action_t`（今天仓位 0–2）  
-    → `reward_t`（今天真实 PnL + 风险惩罚）
-  - 所以一条 trajectory 只有 1 个时间步 t。
-  - 这就是为什么代码里的 loss 里看不到对时间 t 的显式求和。
+- **Our current trading RL setup is effectively a "Single-Step Trajectory"**:
+  - Each day is treated as a trajectory:
+    `state_t` (Today's market state + SFT predictors)
+    → `action_t` (Today's position 0–2)
+    → `reward_t` (Today's actual PnL + Risk penalty)
+  - So a trajectory has only 1 time step t.
+  - This is why you don't see an explicit sum over time t in the loss code.
 
-损失函数在代码里长这样（概念版）：
+The loss function in code looks like this (conceptual):
 
 ```python
 loss = -(log_probs * advantages).mean()
 ```
 
-- `log_probs`: 每个样本（每天）的 `log πθ(a_t | s_t)`
-- `advantages`: 每个样本的优势 `A_t`
-- `.mean()`: 对整个 batch 做平均 = 用这批样本的平均值来近似论文里的期望 `E[...]`
+- `log_probs`: `log πθ(a_t | s_t)` for each sample (day)
+- `advantages`: Advantage `A_t` for each sample
+- `.mean()`: Average over the entire batch = Approximating the expectation `E[...]` using this batch of samples
 
-你已经意识到：
+You have realized:
 
-- **如果轨迹只有 1 步**：  
-  数学上的 `Σ_t` 退化为 1 项；  
-  只剩下对「不同轨迹」(不同天) 的平均。
+- **If the trajectory has only 1 step**:
+  The mathematical `Σ_t` degenerates to 1 term;
+  Only the average over "different trajectories" (different days) remains.
 
 ---
 
-## 2. MLP 输出的两个数：alpha / beta 到底是什么？
+## 2. The two numbers output by MLP: What are alpha / beta exactly?
 
-你一开始的迷惑：
+Your initial confusion:
 
-- 「我们不是就俩 action 吗，alpha 和 beta？」
+- "Don't we just have two actions, alpha and beta?"
 
-澄清：
+Clarification:
 
-- **alpha / beta 不是 action，是「分布的形状参数」**。
-- 我们的 PolicyHead 做的是：
-  1. 看 state，输出两个实数 `raw_alpha`, `raw_beta`
-  2. 经过 Softplus 转成正数，再 +1 得到 `alpha`, `beta`
-  3. 用它们定义一个 **Beta 分布**：`dist = Beta(alpha, beta)`
-  4. **训练时**从中 sample 出一个 `sample ~ Beta(...)`，并映射到 `[0, 2]`：
+- **alpha / beta are NOT actions, they are "Distribution Shape Parameters"**.
+- What our PolicyHead does:
+  1. Look at state, output two real numbers `raw_alpha`, `raw_beta`
+  2. Pass through Softplus to become positive, then +1 to get `alpha`, `beta`
+  3. Use them to define a **Beta Distribution**: `dist = Beta(alpha, beta)`
+  4. **During training**, sample from it `sample ~ Beta(...)`, and map to `[0, 2]`:
      ```python
-     sample = dist.sample()      # 在 [0,1] 上的随机数
-     action = 2.0 * sample       # 缩放到 [0,2]
+     sample = dist.sample()      # Random number in [0,1]
+     action = 2.0 * sample       # Scale to [0,2]
      ```
 
-类比：
+Analogy:
 
-- **alpha / beta**：骰子的形状（公平骰子？偏向某一面？）
-- **action**：这一次扔骰子扔出来的点数
+- **alpha / beta**: The shape of the dice (Fair dice? Biased to one side?)
+- **action**: The point rolled this time
 
-我们之所以想要「分布」而不是「一个定值」，是为了：
+We want a "Distribution" instead of "A fixed value" because:
 
-- **训练时**有随机性（exploration），可以尝试不同仓位；
-- **推理时**用分布的均值（expectation）作为一个稳定的 deterministic 决策。
+- **Training**: Need randomness (exploration) to try different positions;
+- **Inference**: Use the mean (expectation) of the distribution for a stable deterministic decision.
 
 ---
 
-## 3. 轨迹、时间步、action：Σ 到底在对什么求和？
+## 3. Trajectory, Time Step, Action: What is Σ summing over?
 
-你的原始理解（非常接近真相）：
+Your original understanding (very close to truth):
 
-- 一条轨迹里有很多个 action；
-- loss 里应该是「每个 action 的 log_prob × 它的 advantage」，然后加起来；
-- 最后对轨迹做平均。
+- A trajectory has many actions;
+- The loss should be "sum of log_prob of each action × its advantage";
+- Finally average over trajectories.
 
-标准 RL 的数学写法正是这样：
+The mathematical notation of standard RL is exactly this:
 
 ```text
 J(θ) ≈ (1/N) Σ_{i=1..N} Σ_{t=1..T_i} [ log πθ(a_{i,t} | s_{i,t}) * A_{i,t} ]
 ```
 
-- 外层 Σ_i：对 **不同轨迹 τ_i** 求平均（N 条轨迹）
-- 内层 Σ_t：对同一条轨迹内部的 **不同时刻 t 的 action** 做贡献求和
+- Outer Σ_i: Average over **different trajectories τ_i** (N trajectories)
+- Inner Σ_t: Sum contributions of **actions at different times t** within the same trajectory
 
-而在我们的项目里：
+In our project:
 
-- 我们**人为简化成「单步轨迹」**：  
-  每天一条轨迹，轨迹长度 T=1。
-- 所以 `Σ_t` 只剩下 1 项，代码里看起来就只剩下：
+- We **artificially simplify to "Single-Step Trajectory"**:
+  One trajectory per day, trajectory length T=1.
+- So `Σ_t` has only 1 term remaining, and the code looks like:
 
 ```python
 loss = -(log_probs * advantages).mean()
 ```
 
-这里的 `.mean()`：
+Here `.mean()`:
 
-- 是对所有「轨迹 i」（每天样本）做平均；
-- 数学上对应 `(1/N) Σ_i`，内部的 Σ_t 因为 T=1 被省略了。
+- Is averaging over all "trajectory i" (daily samples);
+- Mathematically corresponds to `(1/N) Σ_i`, the inner Σ_t is omitted because T=1.
 
-你总结得很好：
+You summarized it well:
 
-> 蒙特卡洛实际上就是 sample 多个轨迹，然后求和是对一条轨迹上多个 action 求优势加权，最后再对所有轨迹做 uniform 平均。
+> Monte Carlo is actually sampling multiple trajectories, then the summation is weighted advantage sum over multiple actions in one trajectory, and finally uniform average over all trajectories.
 
-在我们这里：**一条轨迹只有 1 个 action**，所以只剩最后那一步平均。
+Here: **A trajectory has only 1 action**, so only the last averaging step remains.
 
-> 额外提示：在 **LLM 场景** 下，一个 prompt (state_0) 通常会 sample 多条完整轨迹（不同回答），每条轨迹内部又包含多次 action（token 级决策）。  
-> 所以一个 batch 可能有 B 个 prompt、每个 prompt 采样 N 条轨迹，总共有 B×N 条轨迹，每条轨迹再按 token 维度求和。  
-> 我们当前的 trading 项目是单步轨迹，所以“每个 state 只 sample 一个 action”已经足以构建 Monte Carlo 估计；不需要像 LLM 那样对同一个 prompt 反复采样多条轨迹。区别只是任务结构不同，抽象的数学框架是一样的。
+> Extra Tip: In **LLM scenarios**, a prompt (state_0) usually samples multiple complete trajectories (different responses), and each trajectory contains multiple actions (token-level decisions).
+> So a batch might have B prompts, each prompt samples N trajectories, total B×N trajectories, and each trajectory sums over token dimension.
+> Our current trading project is single-step trajectory, so "sample one action per state" is sufficient to build Monte Carlo estimate; no need to repeatedly sample multiple trajectories for the same prompt like LLM. The abstract math framework is the same, just different task structures.
 
 ---
 
-## 4. 期望 & 蒙特卡洛：论文里的 E[...] 和代码里的 .mean()
+## 4. Expectation & Monte Carlo: E[...] in paper vs .mean() in code
 
-论文里经常写：
+Papers often write:
 
 ```text
 J(θ) = E_{τ ~ πθ}[ R(τ) ]
 ∇J(θ) = E_{τ ~ πθ}[ Σ_t log πθ(a_t | s_t) * A_t ]
 ```
 
-你抓住了这点：
+You grasped this point:
 
-- 外层的 `E[...]` 是「在所有可能轨迹上的期望」
-- 实际上我们不可能枚举所有轨迹，只能：
-  - sample 出 N 条轨迹（或 N 个样本）
-  - 用样本平均 **近似期望**。
+- The outer `E[...]` is "Expectation over all possible trajectories"
+- In reality, we cannot enumerate all trajectories, we can only:
+  - Sample N trajectories (or N samples)
+  - Use sample average to **approximate expectation**.
 
-这就是「蒙特卡洛估计」在 RL 里的具体含义：
+This is the concrete meaning of "Monte Carlo Estimate" in RL:
 
 ```python
 loss = -(log_probs * advantages).mean()
 ```
 
-- `log_probs * advantages`：对应单个样本/时间步的 `log π * A`
-- `.mean()`：对整个 batch（样本集合）做平均，近似 `E[...]`
+- `log_probs * advantages`: Corresponds to `log π * A` for a single sample/step
+- `.mean()`: Average over the batch (collection of samples), approximating `E[...]`
 
-你后面精准地总结出了本质：
+You summarized the essence accurately later:
 
-> 蒙特卡洛实际上就是 sample 多个轨迹，然后对一条轨迹内做 Σ，再对所有轨迹做平均。
+> Monte Carlo is actually sampling multiple trajectories, then doing Σ within a trajectory, then averaging over all trajectories.
 
 ---
 
-## 5. baseline / Advantage：为什么要减去「平均奖励」？
+## 5. Baseline / Advantage: Why subtract "Average Reward"?
 
-原始 REINFORCE：
+Original REINFORCE:
 
 ```text
 Loss_pg = - E[ log πθ(a|s) * R ]
 ```
 
-问题：
+Problem:
 
-- 如果所有 R 都是正的（比如都是 +10），那所有动作的概率都会一起被拉大；
-- 方差很大，训练不稳定。
+- If all R are positive (e.g., all +10), all action probabilities will be pushed up;
+- High variance, unstable training.
 
-解决办法：引入 **baseline**，构造 Advantage：
+Solution: Introduce **baseline**, construct Advantage:
 
 ```text
 A = R - baseline
 Loss = - E[ log π(a|s) * A ]
 ```
 
-最简单的 baseline：
+Simplest baseline:
 
-- 就是当前 batch 的平均奖励 `baseline = rewards.mean()`；
-- 这样：
-  - 比平均好的（A>0）：log_prob 会被「鼓励」变大；
-  - 比平均差的（A<0）：log_prob 会被「惩罚」变小。
+- Just the average reward of the current batch `baseline = rewards.mean()`;
+- Thus:
+  - Better than average (A>0): log_prob is "encouraged" to increase;
+  - Worse than average (A<0): log_prob is "punished" to decrease.
 
-你抓到了重点：
+You caught the key point:
 
-- GRPO 在最简实现里，**可以只用 batch 奖励均值作为 baseline**，
-- 不引入独立的 Value 网络（Critic），先保持 Actor-only，降低复杂度。
+- For simplest GRPO implementation, **using batch reward mean as baseline is sufficient**,
+- No need to introduce independent Value network (Critic), keeping it Actor-only reduces complexity.
 
-这对我们现在的项目是非常合适的。
+This is very suitable for our current project.
 
 ---
 
-## 6. PPO / GRPO 里的 ratio & clip / KL 惩罚到底在干嘛？
+## 6. What are ratio & clip / KL penalty doing in PPO / GRPO?
 
-你问到：
+You asked:
 
-- 为啥很多地方还有 KL 惩罚？
-- 这和 clip 有啥区别？
+- Why do many places have KL penalty?
+- What's the difference from clip?
 
-本质都是同一件事：**防止更新太猛（“学过头”）**。
+Essentially they do the same thing: **Prevent updating too aggressively ("Over-learning")**.
 
-### 6.1 ratio + clip（PPO / GRPO）
+### 6.1 ratio + clip (PPO / GRPO)
 
-PPO 风格的目标：
+PPO style objective:
 
 ```text
 r(θ) = π_new(a|s) / π_old(a|s)
 L_clip(θ) = E[ min( r(θ) * A, clip(r(θ), 1-ε, 1+ε) * A ) ]
 ```
 
-解释：
+Explanation:
 
-- 如果新策略 π_new 相比旧策略 π_old 改变不大（r 在 [1-ε,1+ε] 之间），就正常用 `r * A`；
-- 如果改太多（r 超出区间），就强制截断到 `1±ε`；
-- 防止某一次梯度太大，把策略整形直接打崩。
+- If new policy π_new doesn't change much from old policy π_old (r is within [1-ε, 1+ε]), use `r * A` normally;
+- If changed too much (r out of range), force clip to `1±ε`;
+- Prevents a single gradient step from destroying the policy shape.
 
-### 6.2 KL 惩罚
+### 6.2 KL Penalty
 
-另一种常见做法是加 KL penalty：
+Another common approach is adding KL penalty:
 
 ```text
 loss = loss_pg + β * KL(π_new || π_old)
 ```
 
-- KL 越大，说明新旧策略差得越多；
-- 乘上一个权重 β，当偏离太多时提供惩罚，逼着更新「慢一点」。
+- Larger KL means larger difference between new and old policies;
+- Multiply by weight β to penalize when deviation is too large, forcing updates to be "slower".
 
-**在我们当前的小 MLP 上：**
+**For our current small MLP:**
 
-- 可以先不加 KL / clip，  
-  用小学习率 + baseline + 适当的 early stopping；
-- 如果之后发现训练不稳定，再考虑加一个简单的 KL penalty，是最容易落地的加强版。
+- Can start without KL / clip,
+  Use small learning rate + baseline + appropriate early stopping;
+- If training proves unstable later, consider adding a simple KL penalty as the easiest enhancement.
 
 ---
 
-## 7. 训练时的“随机 sample” vs 推理时的“确定动作”
+## 7. Training "Random Sample" vs Inference "Deterministic Action"
 
-你一开始困惑：
+Your initial confusion:
 
-- “既然我们要用 RL，为什么还要随机 sample？那线上推理的时候怎么办？”
+- "Since we use RL, why random sample? What about online inference?"
 
-关键区别：
+Key Difference:
 
-### 7.1 训练阶段（Exploration 模式）
+### 7.1 Training Phase (Exploration Mode)
 
-我们希望策略多试试不同动作：
+We want the policy to try different actions:
 
 ```python
 alpha, beta = policy_head(state)
 dist = Beta(alpha, beta)
-sample = dist.sample()      # 在 [0,1] 内抽一个
-action = 2.0 * sample       # 仓位 [0,2]
+sample = dist.sample()      # Draw one in [0,1]
+action = 2.0 * sample       # Position [0,2]
 ```
 
-- 每次训练，同一个 state 可能抽出不同的 action；
-- 不同的 action 会导致不同的 reward；
-- 这样我们才能比较：**“action A 比 action B 好多少？”**，并通过 advantage 把这个信息写回网络参数里。
+- Each training, same state might draw different action;
+- Different actions lead to different rewards;
+- This allows comparing: **"How much better is action A than action B?"**, and writing this info back to parameters via advantage.
 
-### 7.2 推理阶段（Exploitation 模式）
+### 7.2 Inference Phase (Exploitation Mode)
 
-上线时，我们只需要一个稳定、可重复的决策：
+Online, we need a stable, repeatable decision:
 
 ```python
 alpha, beta = policy_head(state)
-mean = alpha / (alpha + beta)   # Beta 的均值 in [0,1]
-action = 2.0 * mean             # 映射到 [0,2]
+mean = alpha / (alpha + beta)   # Mean of Beta in [0,1]
+action = 2.0 * mean             # Map to [0,2]
 ```
 
-- 不再 sample；
-- 行为上就退化成「输入向量 → 一个实数仓位」的普通回归模型。
+- No more sampling;
+- Behavior degrades to a normal regression model: "Input Vector → Real Number Position".
 
-结论：
+Conclusion:
 
-- **多余的随机性只出现在训练**，是为了探索（exploration）；
-- **推理时完全可以 deterministic**。
+- **Excess randomness only appears in training**, for exploration;
+- **Inference can be completely deterministic**.
 
 ---
 
-## 8. 类比到 Transformer / 生成式模型：一整句给奖励还是每个 token 给奖励？
+## 8. Analogy to Transformer / Generative Models: Reward for whole sentence or each token?
 
-你的问题：
+Your question:
 
-- 「LLM 生成的时候是给整段话一个奖励，还是每个 token 一个奖励？」
-- 「如果是整段话，那怎么把奖励用到每个 token 上？」
+- "When LLM generates, is reward for the whole paragraph or each token?"
+- "If for whole paragraph, how to apply reward to each token?"
 
-标准 RLHF / GRPO-LLM 做法：
+Standard RLHF / GRPO-LLM approach:
 
-1. **生成整句 response**：
-   - 给一个 prompt，模型生成一个完整序列 `y_1,...,y_T`。
-2. **对整句打一个分 `R`**（来自 reward model 或打分规则）。
-3. **把这个 R 分配到每个 token 的 log_prob 上**：
+1. **Generate whole response**:
+   - Given a prompt, model generates complete sequence `y_1,...,y_T`.
+2. **Score `R` for the whole sentence** (from reward model or rules).
+3. **Distribute this `R` to the log_prob of each token**:
 
    ```text
    Loss = - Σ_{t=1..T} [ log πθ(y_t | y_<t, x) * R ]
    ```
 
-   - 虽然 R 是对整句的评分，但每个 token 的选择都对这句好坏有贡献；
-   - 所以每个时间步 t 都乘上同一个 R，告诉模型：
-     > “这整句都挺好，你在这些步骤里的决策都该被推一推。”
+   - Although R is for the sentence, every token choice contributed to it;
+   - So multiply every time step t by the same R, telling the model:
+     > "This whole sentence is good, decisions at all these steps should be encouraged."
 
-你之前的想法：
+Your previous thought:
 
-- 「总不能对每个词都枚举排列组合生成一句话吧？」
+- "We can't enumerate permutations for every word to generate a sentence, right?"
 
-的确不会，做法是：
+Indeed not, the approach is:
 
-- 用当前策略 πθ **sample 若干条句子**（轨迹 τ）；
-- 对每条轨迹评 Reward；
-- 用这些 sample 的统计来近似理论上的 `E_{τ ~ πθ}[·]`；
-- 完全不需要枚举所有可能句子。
+- Use current policy πθ to **sample a few sentences** (trajectories τ);
+- Score Reward for each trajectory;
+- Use statistics of these samples to approximate theoretical `E_{τ ~ πθ}[·]`;
+- No need to enumerate all possible sentences.
 
-这和我们交易版的 RL 是一模一样的逻辑，只是：
+This logic is identical to our trading RL, just:
 
-- 交易：一条轨迹是「多天的仓位序列」；
-- 文本：一条轨迹是「多 token 的输出序列」。
+- Trading: A trajectory is "sequence of positions over days";
+- Text: A trajectory is "output sequence of tokens".
 
 ---
 
-## 9. 总结：把你现在的理解提炼成几句「金句」方便复习
+## 9. Summary: Distilling your understanding into "Golden Sentences" for review
 
-1. **蒙特卡洛**：就是「从当前策略里 sample 多条轨迹，用它们的平均近似理论上的期望 E[...]」。
-2. **轨迹 vs action**：一条轨迹由多步 (s_t, a_t, r_t) 组成，内层 Σ_t 是对一条轨迹内所有时间步的贡献求和，外层 Σ_i / mean 是对多条轨迹的平均。
-3. **alpha / beta**：不是 action，是「动作分布的性格」；真正的 action 是从 Beta(α,β) 里 sample 出来的仓位。
-4. **Advantage**：`A = R - baseline`，最简单 baseline 就是 batch reward 均值；A>0 的动作会被鼓励，A<0 的动作会被压低概率。
-5. **我们当前项目**：每条轨迹只有 1 步（当天 state → 当天 action → 当天 reward），所以时间维上的 Σ_t 退化，只剩对 batch 的平均。
-6. **训练 vs 推理**：训练用随机 sample（exploration），推理用均值（exploitation），对外看起来就是一个普通的“输入 → 仓位”模型。
-7. **PPO/GRPO**：在基本的 `log_prob * A` 上，加了 ratio / clip / KL 等约束，目的是“别一次改太猛”，提高训练稳定性。
+1. **Monte Carlo**: Simply "Sample multiple trajectories from current policy, use their average to approximate theoretical expectation E[...]".
+2. **Trajectory vs Action**: A trajectory consists of multiple steps (s_t, a_t, r_t), inner Σ_t sums contributions within a trajectory, outer Σ_i / mean averages over multiple trajectories.
+3. **alpha / beta**: Not actions, but "personality of action distribution"; real action is sampled from Beta(α,β).
+4. **Advantage**: `A = R - baseline`, simplest baseline is batch reward mean; A>0 actions encouraged, A<0 actions suppressed.
+5. **Our Project**: Each trajectory has only 1 step (Today State → Today Action → Today Reward), so Σ_t over time degenerates, leaving only average over batch.
+6. **Training vs Inference**: Training uses random sample (exploration), inference uses mean (exploitation), externally looks like normal "Input → Position" model.
+7. **PPO/GRPO**: Added constraints like ratio / clip / KL on top of basic `log_prob * A`, aiming to "not change too much at once", improving stability.
 
-如果以后你想把这些再和具体代码一一对照，我们可以在 `kaggle/work/grpo.py` 里写一个「6 行伪环境 + 20 行训练循环」的玩具版，把每个 Σ / E[...] 都标在具体的 tensor 维度上。那样你就能从「论文公式 → 代码实现」完全自由切换了。
-
-
+If you want to match these with specific code later, we can write a "6-line dummy environment + 20-line training loop" toy version in `kaggle/work/grpo.py`, marking every Σ / E[...] on specific tensor dimensions. That way you can switch freely between "Paper Formula → Code Implementation".
