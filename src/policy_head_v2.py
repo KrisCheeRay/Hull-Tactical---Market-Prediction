@@ -3,64 +3,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
-# class PolicyHead(nn.Module):
-#     """
-#     Policy Head for action in [0, 2]
-#     Using Gaussian + Sigmoid (squashed Gaussian)
-#     """
-#     def __init__(self, input_dim, hidden_dim=128):
-#         super().__init__()
-
-#         self.net = nn.Sequential(
-#             nn.Linear(input_dim, hidden_dim),
-#             nn.ReLU(),
-#             nn.Linear(hidden_dim, hidden_dim // 2),
-#             nn.ReLU()
-#         )
-
-#         # Gaussian parameters
-#         self.mu_layer = nn.Linear(hidden_dim // 2, 1)
-#         self.log_std_layer = nn.Linear(hidden_dim // 2, 1)
-
-#     def forward(self, x):
-#         h = self.net(x)
-#         mu = self.mu_layer(h)
-#         log_std = self.log_std_layer(h)
-#         log_std = torch.clamp(log_std, -5, 2)  # avoid instability
-#         return mu, log_std
-
-#     def get_action(self, x, deterministic=False):
-#         mu, log_std = self.forward(x)
-#         std = log_std.exp()
-
-#         if deterministic:
-#             raw = mu
-#         else:
-#             dist = torch.distributions.Normal(mu, std)
-#             raw = dist.rsample()
-
-#         # squash: (0, 2)
-#         action = 2 * torch.sigmoid(raw)
-#         return action
-
-#     def get_log_prob(self, x, action):
-#         mu, log_std = self.forward(x)
-#         std = log_std.exp()
-
-#         dist = torch.distributions.Normal(mu, std)
-
-#         # invert sigmoid to compute log prob
-#         eps = 1e-6
-#         action_norm = action / 2  # back to [0, 1]
-#         raw = torch.log(action_norm + eps) - torch.log(1 - action_norm + eps)
-
-#         # log prob of Gaussian
-#         log_prob = dist.log_prob(raw)
-
-#         # correction term (sigmoid squashing)
-#         log_prob -= torch.log(action_norm * (1 - action_norm) + eps)
-
-#         return log_prob.squeeze(-1)
 class PolicyHead(nn.Module):
     def __init__(self, input_dim: int, hidden_dim: int = 128):
         super().__init__()
