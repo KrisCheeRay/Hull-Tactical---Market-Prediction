@@ -110,7 +110,7 @@ def generate_oos_predictions(
     # Build Models
     models = []
     # PatchTST: No hist_exog (CI mode)
-    patch_model = build_patchtst(sft_cfg, schema)
+    patch_model = build_patchtst(sft_cfg)
     models.append(patch_model)
     
     if build_nhits and ensemble_cfg.get("weights", {}).get("nhits", 0.0) > 0:

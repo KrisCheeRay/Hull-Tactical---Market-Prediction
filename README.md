@@ -1,8 +1,20 @@
 # Kaggle Hull Tactical Market Prediction - End-to-End Pipeline
 
+## 🎯 Key Results
+
+| Model | Score | Description |
+|-------|-------|-------------|
+| **Online Learning MLP** | **2.6** | Simple MLP with online learning - **Best performing** |
+| GRPO V1 | 0.43 | Complex RL-based strategy with N-HiTS + Policy Head |
+| GRPO V2 | <0.43 | Improved reward function, worse performance |
+
+**Key Insight**: Simple online learning outperformed complex pre-trained RL models, highlighting the importance of adaptability in changing market conditions.
+
 ## Overview
 
 This project implements a robust, end-to-end pipeline for the Kaggle Hull Tactical Market Prediction competition. The core strategy combines **Supervised Fine-Tuning (SFT)** of state-of-the-art time series models (N-HiTS, PatchTST) with a **Reinforcement Learning (RL)** inspired policy optimization stage (GRPO).
+
+**Note**: While the GRPO approach is theoretically sound, the best results came from a simpler online learning MLP (`online_learning_simple.py`).
 
 ### Key Features
 
